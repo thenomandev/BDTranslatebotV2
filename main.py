@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 # =========================
-# Environment
+# Environment Variables
 # =========================
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -29,10 +29,7 @@ if not TOKEN:
     raise RuntimeError("BOT_TOKEN environment variable is missing!")
 
 
-# =========================
-# LibreTranslate
-# =========================
-
+# LibreTranslate API
 LIBRETRANSLATE_URL = os.getenv(
     "LIBRETRANSLATE_URL",
     "https://libretranslate.com/translate"
@@ -44,12 +41,17 @@ LIBRETRANSLATE_API_KEY = os.getenv(
 
 
 # =========================
-# Flask + Telegram
+# Flask + Telegram Bot
 # =========================
 
 bot = Bot(token=TOKEN)
 
 app = Flask(__name__)
+
+
+# =========================
+# Telegram Dispatcher
+# =========================
 
 dispatcher = Dispatcher(
     bot,
@@ -59,7 +61,7 @@ dispatcher = Dispatcher(
 
 
 # =========================
-# Translation
+# Translation Function
 # =========================
 
 def translate_text(text):
@@ -71,78 +73,94 @@ def translate_text(text):
 
     try:
 
-        # Detect language using LibreTranslate
-        detect_response = requests.post(
-            LIBRETRANSLATE_URL.replace(
-                "/translate",
-                "/detect"
-            ),
-            data={
-                "q": text
-            },
-            headers={
-                "User-Agent": "BDTranslateBot/1.0"
-            },
-            timeout=15
-        )
-
-        detect_response.raise_for_status()
-
-        detected = detect_response.json()
-
-        if not detected:
-            logger.error("Language detection returned empty response.")
-            return None
-
-        source_language = detected[0].get("language")
-
-        logger.info(
-            "Detected language: %s",
-            source_language
+        # Detect Bangla locally
+        has_bangla = any(
+            "\u0980" <= char <= "\u09FF"
+            for char in text
         )
 
 
         # =========================
-        # Destination language
+        # Bangla -> English
         # =========================
 
-        if source_language == "bn":
+        if has_bangla:
 
-            destination = "en"
+            source_language = "bn"
+            destination_language = "en"
+
+
+        # =========================
+        # English/Other -> Bangla
+        # =========================
 
         else:
 
-            destination = "bn"
+            source_language = "auto"
+            destination_language = "bn"
+
+
+        logger.info(
+            "Translation: %s -> %s",
+            source_language,
+            destination_language
+        )
 
 
         # =========================
-        # Translation request
+        # API Payload
         # =========================
 
         payload = {
             "q": text,
             "source": source_language,
-            "target": destination,
+            "target": destination_language,
             "format": "text"
         }
 
 
+        # Add API key if available
         if LIBRETRANSLATE_API_KEY:
+
             payload["api_key"] = LIBRETRANSLATE_API_KEY
 
+
+        # =========================
+        # Translation Request
+        # =========================
 
         response = requests.post(
             LIBRETRANSLATE_URL,
             data=payload,
             headers={
-                "User-Agent": "BDTranslateBot/1.0"
+                "User-Agent": "BDTranslateBot/1.0",
+                "Accept": "application/json"
             },
             timeout=20
         )
 
+
+        logger.info(
+            "Translation API status: %s",
+            response.status_code
+        )
+
+
+        logger.info(
+            "Translation API response: %s",
+            response.text[:500]
+        )
+
+
         response.raise_for_status()
 
+
+        # =========================
+        # Parse Response
+        # =========================
+
         result = response.json()
+
 
         translated = result.get(
             "translatedText"
@@ -150,8 +168,9 @@ def translate_text(text):
 
 
         if not translated:
+
             logger.error(
-                "Translation response did not contain translatedText: %s",
+                "No translatedText returned: %s",
                 result
             )
 
@@ -163,8 +182,9 @@ def translate_text(text):
 
         logger.info(
             "Translation successful: %s",
-            translated[:100]
+            translated[:200]
         )
+
 
         return translated
 
@@ -172,7 +192,7 @@ def translate_text(text):
     except requests.exceptions.Timeout:
 
         logger.error(
-            "Translation server timeout."
+            "Translation API timeout."
         )
 
         return None
@@ -199,7 +219,7 @@ def translate_text(text):
 
 
 # =========================
-# Normal Messages
+# Normal Message Handler
 # =========================
 
 def handle_message(update, context):
@@ -209,10 +229,13 @@ def handle_message(update, context):
         if not update.message:
             return
 
+
         if not update.message.text:
             return
 
+
         text = update.message.text.strip()
+
 
         if not text:
             return
@@ -220,11 +243,13 @@ def handle_message(update, context):
 
         logger.info(
             "Received message: %s",
-            text[:100]
+            text[:200]
         )
 
 
-        translated = translate_text(text)
+        translated = translate_text(
+            text
+        )
 
 
         if translated:
@@ -232,6 +257,7 @@ def handle_message(update, context):
             update.message.reply_text(
                 f"🔁 {translated}"
             )
+
 
         else:
 
@@ -241,15 +267,16 @@ def handle_message(update, context):
             )
 
 
-    except Exception:
+    except Exception as e:
 
         logger.exception(
-            "Message handler error"
+            "Message handler error: %s",
+            e
         )
 
 
 # =========================
-# /translate
+# /translate Command
 # =========================
 
 def translate_command(update, context):
@@ -273,7 +300,15 @@ def translate_command(update, context):
         ).strip()
 
 
-        translated = translate_text(text)
+        logger.info(
+            "Translate command: %s",
+            text[:200]
+        )
+
+
+        translated = translate_text(
+            text
+        )
 
 
         if translated:
@@ -282,22 +317,25 @@ def translate_command(update, context):
                 f"🔁 {translated}"
             )
 
+
         else:
 
             update.message.reply_text(
-                "❌ অনুবাদ করা যায়নি।"
+                "❌ অনুবাদ করা যায়নি।\n"
+                "কিছুক্ষণ পরে আবার চেষ্টা করুন।"
             )
 
 
-    except Exception:
+    except Exception as e:
 
         logger.exception(
-            "Translate command error"
+            "Translate command error: %s",
+            e
         )
 
 
 # =========================
-# Handlers
+# Telegram Handlers
 # =========================
 
 dispatcher.add_handler(
@@ -306,6 +344,7 @@ dispatcher.add_handler(
         handle_message
     )
 )
+
 
 dispatcher.add_handler(
     CommandHandler(
@@ -316,7 +355,7 @@ dispatcher.add_handler(
 
 
 # =========================
-# Webhook
+# Webhook Endpoint
 # =========================
 
 @app.route(
@@ -331,7 +370,13 @@ def webhook():
             force=True
         )
 
+
         if not data:
+
+            logger.warning(
+                "Empty webhook data."
+            )
+
             return "No data", 400
 
 
@@ -354,27 +399,31 @@ def webhook():
         return "OK", 200
 
 
-    except Exception:
+    except Exception as e:
 
         logger.exception(
-            "Webhook error"
+            "Webhook error: %s",
+            e
         )
 
         return "ERROR", 500
 
 
 # =========================
-# Status
+# Home / Health Check
 # =========================
 
-@app.route("/")
+@app.route(
+    "/",
+    methods=["GET"]
+)
 def index():
 
     return "BD Translate Bot is live!", 200
 
 
 # =========================
-# Webhook Setup
+# Setup Telegram Webhook
 # =========================
 
 def setup_webhook():
@@ -382,6 +431,7 @@ def setup_webhook():
     render_url = os.getenv(
         "RENDER_EXTERNAL_URL"
     )
+
 
     if not render_url:
 
@@ -401,9 +451,15 @@ def setup_webhook():
 
     try:
 
+        logger.info(
+            "Setting Telegram webhook..."
+        )
+
+
         result = bot.set_webhook(
             url=webhook_url
         )
+
 
         logger.info(
             "Webhook setup result: %s",
@@ -411,15 +467,31 @@ def setup_webhook():
         )
 
 
-    except Exception:
+        webhook_info = bot.get_webhook_info()
+
+
+        logger.info(
+            "Webhook URL configured: %s",
+            webhook_info.url
+        )
+
+
+        logger.info(
+            "Pending updates: %s",
+            webhook_info.pending_update_count
+        )
+
+
+    except Exception as e:
 
         logger.exception(
-            "Webhook setup failed."
+            "Webhook setup failed: %s",
+            e
         )
 
 
 # =========================
-# Start
+# Start Server
 # =========================
 
 if __name__ == "__main__":
